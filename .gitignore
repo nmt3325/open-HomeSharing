@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Per-install identity + logs (generated at runtime, never commit)
+state.json
+*.log
+
+# Generated test media
+testmusic/
+
+# Capture / analysis artifacts (never commit any captured traffic)
+*.pcap
+*.pcapng
+fp-capture/
+fp-wire/
+*.bin
+
+# Editor / OS cruft
+.idea/
+.vscode/
+*.swp
+.DS_Store

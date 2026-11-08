@@ -1,0 +1,15 @@
+# Runtime + tooling dependencies for homeshare-linux (Python 3.9+).
+#
+# The core DAAP/HTTP server and the FairPlay /fp-setup handshake use only the
+# Python standard library. The packages below are for mDNS advertisement, tag
+# reading, and the test tools.
+
+# mDNS/DNS-SD advertisement via the system avahi-daemon over D-Bus (server.py).
+dbus-next>=0.2.3
+
+# Read ID3/Vorbis/MP4 tags from your music files (homeshare/library.py).
+# Without it the server still runs, using filename-derived titles.
+mutagen>=1.45
+
+# Active Home Sharing group discovery for --learn and tools/mdns_check.py.
+zeroconf>=0.39

@@ -64,51 +64,143 @@ GET  /databases/N/items/<id>.<ext>  -> 206  plain audio (HTTP Range)
 `Client-Daap-Validation` headers ride on every client request; the server
 ignores them (accept-all is sufficient).
 
-## Quick start
+---
+
+# Usage
+
+## 1. Requirements
+
+- **Linux** with Python **3.9+**.
+- **`avahi-daemon`** running (the server publishes Bonjour/mDNS over it via
+  D-Bus). On Debian/Ubuntu: `sudo apt install avahi-daemon`.
+- The iPhone and the Linux box must be on the **same LAN / subnet** (mDNS is
+  link-local; it does not cross most VLANs or guest networks).
+- Python deps from `requirements.txt`: `dbus-next` (Avahi over D-Bus),
+  `mutagen` (read tags), `zeroconf` (`--learn` + `tools/mdns_check.py`).
+
+## 2. Install
 
 ```bash
-# 1) deps: avahi-daemon for mDNS (driven over D-Bus via dbus-next),
-#    mutagen for tags, zeroconf for --learn and tools/mdns_check.py
-sudo apt install avahi-daemon
+git clone git@github.com:nmt3325/open-HomeSharing.git homeshare-linux
+cd homeshare-linux
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-
-# 2) make a few test tracks (sine waves w/ tags), or point at your own folder
-python tools/gen_testmusic.py testmusic
-
-# 3) run
-python -m homeshare.server --music testmusic --name "My Linux Library" --learn
-
-# 4) optional self-test from another shell (full connection incl. FairPlay)
-python tools/hsclient.py http://127.0.0.1:3689
 ```
 
-Then on an iPhone signed into the **same Apple ID** with Home Sharing enabled:
-Music → Library → Home Sharing → *My Linux Library*.
+## 3. Run it
 
-To keep it running as a systemd user service, see
-[`systemd/homeshare.service`](systemd/homeshare.service).
+**Try it with generated test tracks first** (sine tones with tags, no encoder
+needed):
 
-### Options
+```bash
+python tools/gen_testmusic.py testmusic
+python -m homeshare.server --music testmusic --name "My Linux Library" --learn
+```
+
+**Point it at your own music** instead:
+
+```bash
+python -m homeshare.server --music ~/Music --name "My Linux Library" --learn
+```
+
+Supported files: **MP3, AAC/ALAC (.m4a), AIFF, WAV**. The server listens on
+`[::]:3689` (dual-stack IPv4+IPv6) by default and logs one startup line:
+
+```
+[main] DAAP/HS on [::]:3689 tracks=42 hG=... state=/home/you/.local/state/homeshare/state.json
+```
+
+## 4. Connect from your iPhone
+
+1. On the iPhone: **Settings → Music → Home Sharing**, and sign in with your
+   Apple ID (this turns Home Sharing *on* on the client — the server cannot do
+   this for you).
+2. Make sure `hG` matches (see below). With `--learn`, the easiest path is: open
+   **Music → Home Sharing** on the phone once while the server is running —
+   that browse query leaks the account's `hG`, the server adopts it and
+   re-advertises.
+3. On the iPhone: **Music → (Library) → Home Sharing → _My Linux Library_**.
+   Your tracks appear; tap one to stream.
+
+> `hG` is the Home Sharing group id, derived from the Apple ID. A client only
+> lists libraries whose `hG` matches its account, so the server must advertise
+> the right one — that is what `--learn` / `--hsgid` are for (next section).
+
+## 5. Matching the Home Sharing group (`hG`)
+
+A client filters discovery by its own `hG`, so the server has to advertise a
+matching value. Three ways, in order of convenience:
+
+- **`--learn`** — sniff the LAN and adopt the first `hG` seen, either from
+  another iTunes/Music library signed into the same account, or from the
+  iPhone's own browse query. Once learned it is saved to `state.json`, so it
+  only has to be seen once.
+- **`--hsgid <hG>`** — set it explicitly if you already know the GUID (no
+  sniffing needed; works even when no other device is online).
+- Default (neither) — plain DAAP only; iOS Home Sharing will not list it.
+
+To discover the `hG` values currently on your LAN:
+
+```bash
+python tools/mdns_check.py            # list _daap._tcp / _home-sharing._tcp
+python tools/mdns_check.py <hG>       # also probe the _<hG>._sub subtype
+```
+
+## 6. Run as a service (systemd --user)
+
+A ready unit is in [`systemd/homeshare.service`](systemd/homeshare.service)
+(runs as your user, no root). Assuming the checkout is at `~/homeshare-linux`
+and the venv at `~/homeshare-linux/.venv`:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/homeshare.service ~/.config/systemd/user/
+# edit --music / --name / flags in the unit to taste
+systemctl --user daemon-reload
+systemctl --user enable --now homeshare.service
+loginctl enable-linger "$USER"        # keep running without an active login
+
+journalctl --user -u homeshare.service -f      # follow logs
+systemctl --user reload homeshare.service      # rescan the library (SIGHUP)
+```
+
+## 7. Verify & troubleshoot
+
+**Full self-test (incl. FairPlay) without a phone** — in a second shell while
+the server runs:
+
+```bash
+python tools/hsclient.py http://127.0.0.1:3689
+# expect: "20/20 checks passed"
+```
+
+Common issues:
+
+| Symptom | Likely cause / fix |
+|---------|--------------------|
+| Library not listed on the phone | `hG` mismatch — use `--learn` and open Home Sharing on the phone once, or pass `--hsgid`. Confirm with `tools/mdns_check.py`. |
+| Nothing discovered at all | `avahi-daemon` not running, or phone/host on different subnets. mDNS is UDP **5353**. |
+| "Unable to turn on Home Sharing" | `/home-share-verify` not returning **204**, or Home Sharing is off on the phone. |
+| Connects but no audio | Open the media port: **TCP 3689** (or your `--port`) must be reachable from the phone. |
+| Tags missing / all "Unknown" | Install `mutagen` (`pip install -r requirements.txt`); unsupported container. |
+
+Logs go to `<state-dir>/hs.log` (default `~/.local/state/homeshare/hs.log`), or
+to the journal under systemd.
+
+## 8. Options
 
 | Flag | Env | Meaning |
 |------|-----|---------|
-| `--music DIR` | `HS_MUSIC` | folder to share: MP3, AAC/ALAC (M4A), AIFF, WAV |
-| `--name NAME` | `HS_NAME` | library display name |
+| `--music DIR` | `HS_MUSIC` | folder to share: MP3, AAC/ALAC (M4A), AIFF, WAV (default `/srv/music`) |
+| `--name NAME` | `HS_NAME` | library display name (default `<hostname> Home Sharing`) |
 | `--port N` | `HS_PORT` | HTTP port (default 3689) |
 | `--hsgid GUID` | `HS_HSGID` | Home Sharing group id (`hG`) to advertise |
 | `--learn` | | sniff the LAN and adopt the `hG` of the local Home Sharing group |
-| `--no-mdns` | | don't publish via Avahi (for manual testing) |
+| `--no-mdns` | | don't publish via Avahi (for manual/offline testing) |
 | `--state-dir DIR` | `HS_STATE_DIR` | where `state.json` + `hs.log` live (default `$XDG_STATE_HOME/homeshare`) |
 | `--log FILE` | | log file (default `<state-dir>/hs.log`) |
 
 `SIGHUP` (or `systemctl --user reload homeshare`) rescans the library.
-
-`--learn` exists because a client only shows libraries whose `hG` (Home Sharing
-group GUID) matches its account. The GUID is derived from the Apple ID; the
-easiest way to match is to adopt the one already advertised on the LAN (e.g. by
-iTunes / Music on a computer signed into the same account). Once learned it is
-saved, so it only has to be seen once.
 
 Per-install identity (Machine ID, Database ID, MID, `hC`, learned `hG`) is
 generated randomly on first start and kept in `state.json` in the state
